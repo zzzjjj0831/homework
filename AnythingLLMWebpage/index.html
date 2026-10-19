@@ -1,0 +1,321 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>AnythingLLM 文件上传</title>
+<style>
+  :root {
+    --accent: #4f46e5;
+    --accent-hover: #4338ca;
+    --accent-light: #eef2ff;
+    --bg: #f1f5f9;
+    --card: #ffffff;
+    --text: #0f172a;
+    --muted: #64748b;
+    --ok: #16a34a;
+    --ok-bg: #f0fdf4;
+    --err: #dc2626;
+    --err-bg: #fef2f2;
+    --border: #e2e8f0;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    font-family: "Segoe UI", "Microsoft YaHei", system-ui, sans-serif;
+    background: linear-gradient(160deg, #eef2ff 0%, var(--bg) 40%);
+    color: var(--text);
+    min-height: 100vh;
+    display: flex;
+    align-items: flex-start;
+    justify-content: center;
+    padding: 48px 24px;
+  }
+  .card {
+    background: var(--card);
+    border-radius: 20px;
+    box-shadow: 0 4px 24px rgba(15, 23, 42, .06), 0 1px 2px rgba(15, 23, 42, .04);
+    width: 100%;
+    max-width: 600px;
+    padding: 40px;
+  }
+
+  .head { display: flex; align-items: center; gap: 14px; margin-bottom: 6px; }
+  .head .badge {
+    width: 44px; height: 44px;
+    border-radius: 12px;
+    background: var(--accent-light);
+    display: flex; align-items: center; justify-content: center;
+    font-size: 22px;
+    flex-shrink: 0;
+  }
+  h1 { font-size: 20px; font-weight: 700; letter-spacing: .2px; }
+  .head .sub { font-size: 13px; color: var(--muted); margin-top: 2px; }
+
+  .steps {
+    display: flex; gap: 6px; align-items: center;
+    margin: 20px 0 16px;
+    font-size: 12px; color: var(--muted);
+  }
+  .steps .s {
+    background: var(--bg);
+    border-radius: 999px;
+    padding: 4px 12px;
+  }
+  .steps .s.on { background: var(--accent-light); color: var(--accent); font-weight: 600; }
+
+  .workspace {
+    display: flex; align-items: center; gap: 10px;
+    background: var(--ok-bg);
+    border: 1px solid #bbf7d0;
+    color: #15803d;
+    border-radius: 12px;
+    padding: 11px 16px;
+    font-size: 13.5px;
+    margin-bottom: 20px;
+  }
+  .workspace.pending { background: var(--bg); border-color: var(--border); color: var(--muted); }
+  .workspace.err { background: var(--err-bg); border-color: #fecaca; color: var(--err); }
+  .workspace b { font-weight: 600; }
+
+  .drop {
+    display: block;
+    border: 2px dashed #cbd5e1;
+    border-radius: 14px;
+    padding: 44px 20px;
+    text-align: center;
+    cursor: pointer;
+    transition: all .15s;
+    color: var(--muted);
+    background: #fafbfc;
+  }
+  .drop:hover, .drop.over { border-color: var(--accent); background: var(--accent-light); color: var(--accent); }
+  .drop .icon { font-size: 34px; display: block; margin-bottom: 12px; }
+  .drop b { color: var(--text); font-size: 15px; }
+  .drop.over b { color: var(--accent); }
+  .drop small { display: block; margin-top: 6px; font-size: 12px; }
+  input[type=file] { display: none; }
+
+  .filelist { margin-top: 16px; }
+  .file {
+    display: flex; align-items: center; gap: 10px;
+    padding: 10px 14px;
+    background: #fafbfc;
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    margin-bottom: 8px;
+    font-size: 13px;
+  }
+  .file .ficon { flex-shrink: 0; font-size: 16px; }
+  .file .name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .file .size { width: 64px; flex-shrink: 0; text-align: right; color: var(--muted); font-variant-numeric: tabular-nums; }
+  .file .rm {
+    width: 24px; height: 24px; flex-shrink: 0;
+    display: flex; align-items: center; justify-content: center;
+    color: var(--muted); cursor: pointer;
+    border: none; background: none; border-radius: 6px; font-size: 14px;
+  }
+  .file .rm:hover { background: var(--err-bg); color: var(--err); }
+
+  .actions { margin-top: 20px; display: flex; gap: 10px; }
+  button.upload {
+    flex: 1;
+    padding: 13px;
+    border: none;
+    border-radius: 12px;
+    background: var(--accent);
+    color: #fff;
+    font-size: 15px;
+    font-weight: 600;
+    cursor: pointer;
+    transition: background .15s, transform .05s;
+  }
+  button.upload:hover:not(:disabled) { background: var(--accent-hover); }
+  button.upload:active:not(:disabled) { transform: scale(.99); }
+  button.upload:disabled { opacity: .45; cursor: not-allowed; }
+  button.clear {
+    padding: 13px 18px;
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    background: #fff;
+    color: var(--muted);
+    font-size: 14px;
+    cursor: pointer;
+  }
+  button.clear:hover:not(:disabled) { color: var(--err); border-color: #fecaca; background: var(--err-bg); }
+  button.clear:disabled { opacity: .45; cursor: not-allowed; }
+
+  .status { margin-top: 18px; display: none; }
+  .status:not(:empty) { display: block; }
+  .status .line {
+    display: flex; align-items: flex-start; gap: 8px;
+    font-size: 13px; line-height: 1.7;
+    padding: 2px 0;
+  }
+  .status .line .ico { flex-shrink: 0; width: 16px; text-align: center; }
+  .status .step { color: var(--muted); }
+  .status .ok { color: var(--ok); }
+  .status .err { color: var(--err); }
+  .status .done {
+    margin-top: 8px;
+    background: var(--ok-bg);
+    border: 1px solid #bbf7d0;
+    border-radius: 10px;
+    padding: 10px 14px;
+    color: #15803d;
+    font-weight: 600;
+  }
+  .spinner {
+    display: inline-block;
+    width: 12px; height: 12px;
+    border: 2px solid #c7d2fe;
+    border-top-color: var(--accent);
+    border-radius: 50%;
+    animation: spin .7s linear infinite;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+</style>
+</head>
+<body>
+<div class="card">
+  <div class="head">
+    <div class="badge">📄</div>
+    <div>
+      <h1>上传文件到 AnythingLLM</h1>
+      <div class="sub">上传后自动完成解析与嵌入（向量化），即可用于对话</div>
+    </div>
+  </div>
+
+  <div class="steps">
+    <span class="s on">① 选择文件</span>→<span class="s on" id="step2">② 上传</span>→<span class="s" id="step3">③ 嵌入</span>
+  </div>
+
+  <div id="ws" class="workspace pending"><span class="spinner"></span>正在连接 AnythingLLM…</div>
+
+  <label class="drop" id="drop">
+    <span class="icon">⬆️</span>
+    <b>点击选择文件，或拖拽到此处</b>
+    <small>支持多选 · 文本类文件（txt / md / csv / json 等）解析效果最佳</small>
+    <input type="file" id="picker" multiple>
+  </label>
+
+  <div class="filelist" id="filelist"></div>
+
+  <div class="actions">
+    <button class="upload" id="go" disabled>上传并嵌入</button>
+    <button class="clear" id="clear" disabled>清空</button>
+  </div>
+
+  <div class="status" id="status"></div>
+</div>
+
+<script>
+const API = "http://127.0.0.1:3001";
+const API_KEY = "47EF28B-25SMNWF-Q9JEH7R-FRN3A16";
+
+let workspace = null;
+let files = [];
+
+const $ = id => document.getElementById(id);
+const line = (cls, ico, html) =>
+  $("status").insertAdjacentHTML("beforeend", `<div class="line ${cls}"><span class="ico">${ico}</span><span>${html}</span></div>`);
+const fmtSize = n => n < 1024 ? n + " B" : n < 1048576 ? (n / 1024).toFixed(1) + " KB" : (n / 1048576).toFixed(1) + " MB";
+const extIcon = name => {
+  const e = name.split(".").pop().toLowerCase();
+  return { pdf: "📕", doc: "📘", docx: "📘", xls: "📗", xlsx: "📗", csv: "📊", ppt: "📙", pptx: "📙",
+           txt: "📝", md: "📝", json: "🧾", js: "📜", py: "🐍", html: "🌐", png: "🖼️", jpg: "🖼️",
+           jpeg: "🖼️", gif: "🖼️", webp: "🖼️", zip: "🗜️" }[e] || "📄";
+};
+
+async function api(path, opts = {}) {
+  opts.headers = Object.assign({ "Authorization": `Bearer ${API_KEY}` }, opts.headers || {});
+  const r = await fetch(API + path, opts);
+  const body = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(body.error || `HTTP ${r.status}`);
+  return body;
+}
+
+async function loadWorkspace() {
+  try {
+    const d = await api("/api/v1/workspaces");
+    if (!d.workspaces?.length) throw new Error("没有任何工作区");
+    workspace = d.workspaces[0];
+    $("ws").className = "workspace";
+    $("ws").innerHTML = `✅ 目标工作区：<b>${workspace.name}</b>`;
+  } catch (e) {
+    $("ws").className = "workspace err";
+    $("ws").textContent = `❌ 连接失败：${e.message}（请确认 AnythingLLM 已启动）`;
+  }
+  renderFiles();
+}
+
+function renderFiles() {
+  $("filelist").innerHTML = files.map((f, i) =>
+    `<div class="file">
+       <span class="ficon">${extIcon(f.name)}</span>
+       <span class="name" title="${f.name}">${f.name}</span>
+       <span class="size">${fmtSize(f.size)}</span>
+       <button class="rm" data-i="${i}" title="移除">✕</button>
+     </div>`
+  ).join("");
+  $("go").disabled = !files.length || !workspace;
+  $("clear").disabled = !files.length;
+}
+$("filelist").addEventListener("click", e => {
+  if (e.target.classList.contains("rm")) { files.splice(+e.target.dataset.i, 1); renderFiles(); }
+});
+
+const drop = $("drop");
+$("picker").addEventListener("change", e => { files.push(...e.target.files); e.target.value = ""; renderFiles(); });
+["dragover", "dragenter"].forEach(ev => drop.addEventListener(ev, e => { e.preventDefault(); drop.classList.add("over"); }));
+["dragleave", "drop"].forEach(ev => drop.addEventListener(ev, e => { e.preventDefault(); drop.classList.remove("over"); }));
+drop.addEventListener("drop", e => { files.push(...e.dataTransfer.files); renderFiles(); });
+$("clear").addEventListener("click", () => { files = []; renderFiles(); });
+
+$("go").addEventListener("click", async () => {
+  const btn = $("go");
+  btn.disabled = true;
+  btn.textContent = "上传中…";
+  $("status").innerHTML = "";
+  $("step2").className = "s on";
+  $("step3").className = "s";
+  const locations = [];
+  for (const f of files) {
+    line("step", `<span class="spinner"></span>`, `正在上传 ${f.name}…`);
+    try {
+      const form = new FormData();
+      form.append("file", f, f.name);
+      const up = await api("/api/v1/document/upload", { method: "POST", body: form });
+      if (!up.success || !up.documents?.length) throw new Error(up.error || "上传失败");
+      for (const doc of up.documents) {
+        locations.push(doc.location);
+        line("ok", "✓", `已上传：${doc.title || doc.name}（${doc.wordCount ?? "?"} 词）`);
+      }
+    } catch (e) {
+      line("err", "✗", `${f.name} 上传失败：${e.message}`);
+    }
+  }
+  if (locations.length) {
+    $("step3").className = "s on";
+    line("step", `<span class="spinner"></span>`, `正在将 ${locations.length} 个文档嵌入「${workspace.name}」…`);
+    try {
+      await api(`/api/v1/workspace/${workspace.slug}/update-embeddings`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ adds: locations, deletes: [] }),
+      });
+      $("status").insertAdjacentHTML("beforeend",
+        `<div class="done">🎉 完成！${locations.length} 个文档已嵌入，现在可以在 AnythingLLM 中对话使用。</div>`);
+      files = [];
+      renderFiles();
+    } catch (e) {
+      line("err", "✗", `嵌入失败：${e.message}（文档已上传但未向量化，请检查嵌入引擎设置）`);
+    }
+  }
+  btn.textContent = "上传并嵌入";
+  btn.disabled = !files.length;
+});
+
+loadWorkspace();
+</script>
+</body>
+</html>
