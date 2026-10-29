@@ -1,0 +1,36 @@
+flowchart TD
+  A[用户输入] --> B[构建历史消息 history]
+  B --> C[调用 OpenAI Chat Completions\n带 tools + tool_choice=auto]
+  C --> D{是否有 tool_calls}
+  D -- 否 --> E[直接输出回复\n并追加到历史]
+  D -- 是 --> F[遍历 tool_calls]
+  F --> G{根据函数名分发}
+  G -- get_date --> H1[subprocess 调用 date]
+  G -- is_leap_year --> H2[Python 判断闰年]
+  G -- get_current_working_directory --> H3[os.getcwd]
+  G -- list_directory --> H4[Path.iterdir]
+  G -- get_file_type --> H5[Path.exists/is_file/is_dir]
+  G -- get_file_content --> H6[Path.read_text]
+  G -- create_file --> H7[mkdir + write_text]
+  G -- edit_file --> H8[write_text]
+  G -- create_directory --> H9[Path.mkdir]
+  G -- remove_directory --> H10[Path.rmdir]
+  G -- remove_file --> H11[Path.unlink]
+  G -- rename_path --> H12[shutil.move]
+  H1 --> I[结果 JSON 化]
+  H2 --> I
+  H3 --> I
+  H4 --> I
+  H5 --> I
+  H6 --> I
+  H7 --> I
+  H8 --> I
+  H9 --> I
+  H10 --> I
+  H11 --> I
+  H12 --> I
+  I --> J[以 role=tool 形式追加到历史]
+  J --> K[再调用 OpenAI 流式生成最终回复]
+  K --> L[流式打印并追加到历史]
+  E --> A
+  L --> A
