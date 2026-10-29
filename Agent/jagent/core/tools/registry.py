@@ -1,4 +1,4 @@
-from . import file_ops, web_ops
+from . import cli_ops, file_ops, web_ops
 
 
 class ToolRegistry:
@@ -154,6 +154,28 @@ class ToolRegistry:
             {
                 "type": "function",
                 "function": {
+                    "name": "RunCli",
+                    "description": "调用本地已安装的命令行程序（CLI），返回标准输出、标准错误和退出码，用于判断执行结果",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "command": {
+                                "type": "string",
+                                "description": "要执行的程序名称或路径，例如 python、git、ls",
+                            },
+                            "args": {
+                                "type": "array",
+                                "items": {"type": "string"},
+                                "description": "传给程序的参数列表，例如 [\"--version\"]",
+                            },
+                        },
+                        "required": ["command"],
+                    },
+                },
+            },
+            {
+                "type": "function",
+                "function": {
                     "name": "fetchWeb",
                     "description": "获取指定网页的主要内容，提取正文并转换为Markdown格式，自动去除导航栏、广告、页脚等无关内容",
                     "parameters": {
@@ -213,6 +235,8 @@ class ToolRegistry:
             return file_ops.remove_file(args.get("path") or "")
         elif name == "rename_path":
             return file_ops.rename_path(args.get("old_path") or "", args.get("new_path") or "")
+        elif name == "RunCli":
+            return cli_ops.run_cli(args.get("command") or "", args.get("args") or [])
         elif name == "fetchWeb":
             return web_ops.fetch_web(args.get("url") or "")
         elif name == "searchWeb":
