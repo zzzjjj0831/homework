@@ -2,8 +2,17 @@ from . import cli_ops, file_ops, web_ops
 
 
 class ToolRegistry:
-    def __init__(self, config=None):
+    def __init__(
+        self,
+        config=None,
+        skill_manager=None,
+        mcp_manager=None,
+        context_manager=None,
+    ):
         self.config = config
+        self.skill_manager = skill_manager
+        self.mcp_manager = mcp_manager
+        self.context_manager = context_manager
         self.tools_def = [
             {
                 "type": "function",
@@ -154,6 +163,45 @@ class ToolRegistry:
             {
                 "type": "function",
                 "function": {
+                    "name": "loadSkill",
+                    "description": "按需加载指定 Skill 的完整说明（SKILL.md），或加载该 Skill 目录内的附件文件",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "name": {"type": "string", "description": "Skill 的名称"},
+                            "filename": {
+                                "type": "string",
+                                "description": "可选，要加载的附件文件路径或文件名，支持相对于 Skill 目录、项目根目录或绝对路径",
+                            },
+                        },
+                        "required": ["name"],
+                    },
+                },
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "createSkill",
+                    "description": "创建新的 Agent Skill：在项目 .agents/skills/ 下创建规范化名称的目录和符合规范的 SKILL.md。若需要 references/、scripts/ 等附件，请在创建后继续使用文件操作工具。",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "name": {
+                                "type": "string",
+                                "description": "Skill 名称，使用小写字母、数字和连字符，例如 my-skill",
+                            },
+                            "skillContext": {
+                                "type": "string",
+                                "description": "写入 SKILL.md 的完整内容，包含正文；可包含 YAML Frontmatter，工具会确保 name 和 description 正确",
+                            },
+                        },
+                        "required": ["name", "skillContext"],
+                    },
+                },
+            },
+            {
+                "type": "function",
+                "function": {
                     "name": "RunCli",
                     "description": "调用本地已安装的命令行程序（CLI），返回标准输出、标准错误和退出码，用于判断执行结果",
                     "parameters": {
@@ -201,12 +249,37 @@ class ToolRegistry:
                     },
                 },
             },
+            {
+                "type": "function",
+                "function": {
+                    "name": "recallContext",
+                    "description": "检索已压缩归档的历史对话原文。当压缩摘要缺少某些历史细节时，可用它在 .agents/context/ 的归档中查找相关片段。",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "id": {
+                                "type": "string",
+                                "description": "可选，归档编号，例如 20261022-153000；不填则检索全部历史归档",
+                            },
+                            "text": {
+                                "type": "string",
+                                "description": "必需，要查找的关键词或文本内容",
+                            },
+                        },
+                        "required": ["text"],
+                    },
+                },
+            },
         ]
-
     def get_tools(self):
-        return self.tools_def
+        tools = list(self.tools_def)
+        if self.mcp_manager is not None:
+            tools.extend(self.mcp_manager.get_tools())
+        return tools
 
     def call(self, name: str, args: dict):
+        if self.mcp_manager is not None and self.mcp_manager.is_mcp_tool(name):
+            return self.mcp_manager.call_tool(name, args)
         if name == "get_date":
             return file_ops.get_date()
         elif name == "is_leap_year":
@@ -235,13 +308,66 @@ class ToolRegistry:
             return file_ops.remove_file(args.get("path") or "")
         elif name == "rename_path":
             return file_ops.rename_path(args.get("old_path") or "", args.get("new_path") or "")
+        elif name == "loadSkill":
+            if self.skill_manager is None:
+                import json
+
+                return json.dumps({"error": "skill manager not initialized"}, ensure_ascii=False)
+            return self.skill_manager.load_skill(
+                args.get("name") or "", args.get("filename")
+            )
+        elif name == "createSkill":
+            if self.skill_manager is None:
+                import json
+
+                return json.dumps({"error": "skill manager not initialized"}, ensure_ascii=False)
+            return self.skill_manager.create_skill(
+                args.get("name") or "", args.get("skillContext") or ""
+            )
         elif name == "RunCli":
-            return cli_ops.run_cli(args.get("command") or "", args.get("args") or [])
+            options = {}
+            if self.config is not None:
+                options = {
+                    "timeout": self.config.get_cli_timeout(),
+                    "max_timeout": self.config.get_cli_max_timeout(),
+                    "max_output_chars": self.config.get_cli_max_output_chars(),
+                }
+            return cli_ops.run_cli(
+                args.get("command") or "", args.get("args") or [], **options
+            )
         elif name == "fetchWeb":
-            return web_ops.fetch_web(args.get("url") or "")
+            options = {}
+            if self.config is not None:
+                options = {
+                    "timeout": self.config.get_web_timeout(),
+                    "connect_timeout": self.config.get_web_connect_timeout(),
+                    "user_agent": self.config.get_user_agent(),
+                }
+            return web_ops.fetch_web(args.get("url") or "", **options)
         elif name == "searchWeb":
             api_key = self.config.get_search_api_key() if self.config else ""
-            return web_ops.search_web(args.get("query") or "", api_key)
+            options = {}
+            if self.config is not None:
+                options = {
+                    "top_k": self.config.get_search_top_k(),
+                    "timeout": self.config.get_search_timeout(),
+                    "api_url": self.config.get_search_api_url(),
+                    "max_summary_chars": self.config.get_web_max_summary_chars(),
+                    "user_agent": self.config.get_user_agent(),
+                }
+            return web_ops.search_web(
+                args.get("query") or "", api_key, **options
+            )
+        elif name == "recallContext":
+            if self.context_manager is None:
+                import json
+
+                return json.dumps(
+                    {"error": "context manager not initialized"}, ensure_ascii=False
+                )
+            return self.context_manager.search(
+                args.get("text") or "", args.get("id")
+            )
         else:
             import json
 

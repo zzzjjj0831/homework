@@ -1,3 +1,5 @@
 textual
 openai
 trafilatura
+pyyaml
+mcp>=2.0

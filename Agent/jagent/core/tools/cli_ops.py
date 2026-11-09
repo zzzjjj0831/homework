@@ -1,10 +1,11 @@
-import json
+﻿import json
 import shlex
 import shutil
 import subprocess
 
 
 DEFAULT_TIMEOUT = 30
+DEFAULT_MAX_TIMEOUT = 300
 MAX_OUTPUT_CHARS = 4000
 
 
@@ -21,7 +22,8 @@ def _decode_output(data):
     return data.decode("utf-8", errors="replace")
 
 
-def _truncate(text, limit=MAX_OUTPUT_CHARS):
+def _truncate(text, limit: int = MAX_OUTPUT_CHARS):
+    limit = max(100, int(limit))
     if len(text) <= limit:
         return text, False, len(text)
     omitted = len(text) - limit
@@ -42,7 +44,13 @@ def _normalize_args(args):
     raise ValueError("args 必须是字符串列表")
 
 
-def run_cli(command: str, args=None, timeout: int = DEFAULT_TIMEOUT) -> str:
+def run_cli(
+    command: str,
+    args=None,
+    timeout: int = DEFAULT_TIMEOUT,
+    max_timeout: int = DEFAULT_MAX_TIMEOUT,
+    max_output_chars: int = MAX_OUTPUT_CHARS,
+) -> str:
     command = (command or "").strip()
     if not command:
         return json.dumps({"error": "command 不能为空"}, ensure_ascii=False)
@@ -53,9 +61,13 @@ def run_cli(command: str, args=None, timeout: int = DEFAULT_TIMEOUT) -> str:
         return json.dumps({"error": str(e)}, ensure_ascii=False)
 
     try:
-        timeout = max(1, min(int(timeout), 300))
+        max_timeout = max(1, int(max_timeout))
     except (TypeError, ValueError):
-        timeout = DEFAULT_TIMEOUT
+        max_timeout = DEFAULT_MAX_TIMEOUT
+    try:
+        timeout = max(1, min(int(timeout), max_timeout))
+    except (TypeError, ValueError):
+        timeout = min(DEFAULT_TIMEOUT, max_timeout)
 
     program = shutil.which(command)
     if not program:
@@ -74,8 +86,12 @@ def run_cli(command: str, args=None, timeout: int = DEFAULT_TIMEOUT) -> str:
             check=False,
         )
     except subprocess.TimeoutExpired as e:
-        stdout, stdout_truncated, stdout_length = _truncate(_decode_output(e.stdout))
-        stderr, stderr_truncated, stderr_length = _truncate(_decode_output(e.stderr))
+        stdout, stdout_truncated, stdout_length = _truncate(
+            _decode_output(e.stdout), max_output_chars
+        )
+        stderr, stderr_truncated, stderr_length = _truncate(
+            _decode_output(e.stderr), max_output_chars
+        )
         return json.dumps(
             {
                 "command": command,
@@ -99,8 +115,12 @@ def run_cli(command: str, args=None, timeout: int = DEFAULT_TIMEOUT) -> str:
             ensure_ascii=False,
         )
 
-    stdout, stdout_truncated, stdout_length = _truncate(_decode_output(result.stdout))
-    stderr, stderr_truncated, stderr_length = _truncate(_decode_output(result.stderr))
+    stdout, stdout_truncated, stdout_length = _truncate(
+        _decode_output(result.stdout), max_output_chars
+    )
+    stderr, stderr_truncated, stderr_length = _truncate(
+        _decode_output(result.stderr), max_output_chars
+    )
 
     return json.dumps(
         {

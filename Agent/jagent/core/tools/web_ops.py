@@ -7,6 +7,7 @@ from urllib.parse import urlparse
 
 
 DEFAULT_TIMEOUT = 30
+DEFAULT_CONNECT_TIMEOUT = 10
 SEARCH_API_URL = "https://qianfan.baidubce.com/v2/ai_search/web_search"
 MAX_SUMMARY_CHARS = 600
 USER_AGENT = (
@@ -93,7 +94,15 @@ def _api_error_detail(raw: bytes, fallback: str) -> str:
     return f"{message}（code={code}）"
 
 
-def search_web(query: str, api_key: str, top_k: int = 10, timeout: int = DEFAULT_TIMEOUT) -> str:
+def search_web(
+    query: str,
+    api_key: str,
+    top_k: int = 10,
+    timeout: int = DEFAULT_TIMEOUT,
+    api_url: str = SEARCH_API_URL,
+    max_summary_chars: int = MAX_SUMMARY_CHARS,
+    user_agent: str = USER_AGENT,
+) -> str:
     query = (query or "").strip()
     if not query:
         return _search_error(query, "搜索关键词不能为空")
@@ -118,12 +127,13 @@ def search_web(query: str, api_key: str, top_k: int = 10, timeout: int = DEFAULT
         "resource_type_filter": [{"type": "web", "top_k": top_k}],
     }
     request = urllib.request.Request(
-        SEARCH_API_URL,
+        api_url or SEARCH_API_URL,
         data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
         headers={
             "Authorization": f"Bearer {api_key}",
             "Content-Type": "application/json",
             "Accept": "application/json",
+            "User-Agent": user_agent or USER_AGENT,
         },
         method="POST",
     )
@@ -172,7 +182,10 @@ def search_web(query: str, api_key: str, top_k: int = 10, timeout: int = DEFAULT
         item = {
             "title": title,
             "url": url,
-            "summary": _clip_summary(reference.get("snippet") or reference.get("content") or ""),
+            "summary": _clip_summary(
+                reference.get("snippet") or reference.get("content") or "",
+                max_summary_chars,
+            ),
         }
         date = reference.get("date")
         if date:
@@ -188,7 +201,12 @@ def search_web(query: str, api_key: str, top_k: int = 10, timeout: int = DEFAULT
     return json.dumps({"query": query, "results": results}, ensure_ascii=False)
 
 
-def fetch_web(url: str, timeout: int = DEFAULT_TIMEOUT) -> str:
+def fetch_web(
+    url: str,
+    timeout: int = DEFAULT_TIMEOUT,
+    connect_timeout: int = DEFAULT_CONNECT_TIMEOUT,
+    user_agent: str = USER_AGENT,
+) -> str:
     url = (url or "").strip()
     if not _is_supported_url(url):
         return _error(url, "无效的URL，仅支持http或https协议")
@@ -198,6 +216,11 @@ def fetch_web(url: str, timeout: int = DEFAULT_TIMEOUT) -> str:
     except (TypeError, ValueError):
         timeout = DEFAULT_TIMEOUT
     timeout = max(1, min(timeout, 120))
+    try:
+        connect_timeout = int(connect_timeout)
+    except (TypeError, ValueError):
+        connect_timeout = DEFAULT_CONNECT_TIMEOUT
+    connect_timeout = max(1, min(connect_timeout, timeout))
 
     command = [
         "curl",
@@ -206,11 +229,11 @@ def fetch_web(url: str, timeout: int = DEFAULT_TIMEOUT) -> str:
         "--compressed",
         "--fail",
         "--connect-timeout",
-        str(min(timeout, 10)),
+        str(connect_timeout),
         "--max-time",
         str(timeout),
         "-A",
-        USER_AGENT,
+        user_agent or USER_AGENT,
         "-H",
         "Accept: text/html,application/xhtml+xml,*/*;q=0.8",
         "-H",
