@@ -77,6 +77,29 @@
   .workspace.err { background: var(--err-bg); border-color: #fecaca; color: var(--err); }
   .workspace b { font-weight: 600; }
 
+  .conn {
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 12px 14px;
+    margin-bottom: 16px;
+    background: #fafbfc;
+  }
+  .conn .row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+  .conn label { font-size: 12px; color: var(--muted); width: 100%; margin-bottom: 4px; }
+  .conn input {
+    flex: 1 1 180px; min-width: 0;
+    padding: 8px 10px; font-size: 13px;
+    border: 1px solid var(--border); border-radius: 8px;
+    background: #fff; color: var(--text);
+  }
+  .conn input:focus { outline: none; border-color: var(--accent); }
+  .conn button {
+    padding: 8px 14px; font-size: 13px; cursor: pointer;
+    border: none; border-radius: 8px; background: var(--accent); color: #fff;
+  }
+  .conn button:hover { background: var(--accent-hover); }
+  .conn #connState { font-size: 12px; color: var(--muted); }
+
   .drop {
     display: block;
     border: 2px dashed #cbd5e1;
@@ -189,6 +212,16 @@
     <span class="s on">① 选择文件</span>→<span class="s on" id="step2">② 上传</span>→<span class="s" id="step3">③ 嵌入</span>
   </div>
 
+  <div class="conn">
+    <label for="baseUrl">连接配置（不写入源码，仅保存在当前浏览器会话，关闭标签页即失效）</label>
+    <div class="row">
+      <input id="baseUrl" type="url" placeholder="API 地址，例如 http://127.0.0.1:3001" autocomplete="off">
+      <input id="apiKey" type="password" placeholder="AnythingLLM API Key" autocomplete="off">
+      <button id="connSave" type="button">保存并连接</button>
+      <span id="connState"></span>
+    </div>
+  </div>
+
   <div id="ws" class="workspace pending"><span class="spinner"></span>正在连接 AnythingLLM…</div>
 
   <label class="drop" id="drop">
@@ -209,15 +242,37 @@
 </div>
 
 <script>
-const API = "http://127.0.0.1:3001";
-const API_KEY = "47EF28B-25SMNWF-Q9JEH7R-FRN3A16";
+/* 连接信息不写入源码：首次使用时由用户填写，仅保存在当前浏览器 sessionStorage，
+   关闭标签页即失效。仓库中不得出现任何真实 API Key。 */
+const STORAGE_KEY = "anythingllm.conn";
+const DEFAULT_BASE = "http://127.0.0.1:3001";
 
+let conn = loadConn();
 let workspace = null;
 let files = [];
 
 const $ = id => document.getElementById(id);
-const line = (cls, ico, html) =>
-  $("status").insertAdjacentHTML("beforeend", `<div class="line ${cls}"><span class="ico">${ico}</span><span>${html}</span></div>`);
+/* 所有来自接口/用户的文本一律经 textContent 写入，避免 XSS。 */
+const line = (cls, ico, text) => {
+  const row = document.createElement("div");
+  row.className = `line ${cls}`;
+  const i = document.createElement("span");
+  i.className = "ico";
+  i.textContent = ico;
+  const t = document.createElement("span");
+  t.textContent = text;
+  row.append(i, t);
+  $("status").append(row);
+};
+
+function loadConn() {
+  try { return JSON.parse(sessionStorage.getItem(STORAGE_KEY) || "null"); } catch { return null; }
+}
+
+function applyConnToForm() {
+  $("baseUrl").value = conn ? conn.base : DEFAULT_BASE;
+  $("connState").textContent = conn ? "已保存（仅本次会话有效）" : "";
+}
 const fmtSize = n => n < 1024 ? n + " B" : n < 1048576 ? (n / 1024).toFixed(1) + " KB" : (n / 1048576).toFixed(1) + " MB";
 const extIcon = name => {
   const e = name.split(".").pop().toLowerCase();
@@ -227,36 +282,75 @@ const extIcon = name => {
 };
 
 async function api(path, opts = {}) {
-  opts.headers = Object.assign({ "Authorization": `Bearer ${API_KEY}` }, opts.headers || {});
-  const r = await fetch(API + path, opts);
+  if (!conn) throw new Error("尚未配置连接");
+  const headers = Object.assign({ "Authorization": `Bearer ${conn.key}` }, opts.headers || {});
+  const r = await fetch(conn.base + path, Object.assign({}, opts, { headers }));
   const body = await r.json().catch(() => ({}));
-  if (!r.ok) throw new Error(body.error || `HTTP ${r.status}`);
+  if (!r.ok) {
+    const detail = body.error || body.message || `HTTP ${r.status}`;
+    throw new Error(typeof detail === "string" ? detail : JSON.stringify(detail));
+  }
   return body;
 }
 
+function setWs(state, text, strongText) {
+  const box = $("ws");
+  box.className = `workspace ${state}`;
+  box.replaceChildren();
+  if (state === "pending") {
+    const sp = document.createElement("span");
+    sp.className = "spinner";
+    box.append(sp);
+  }
+  if (text) box.append(document.createTextNode(text));
+  if (strongText) {
+    const b = document.createElement("b");
+    b.textContent = strongText;
+    box.append(b);
+  }
+}
+
 async function loadWorkspace() {
+  workspace = null;
+  setWs("pending", "正在连接 AnythingLLM…");
+  if (!conn) {
+    setWs("err", "⚠ 尚未配置连接：请在上方填写 API 地址与 API Key 后点击保存");
+    renderFiles();
+    return;
+  }
   try {
     const d = await api("/api/v1/workspaces");
     if (!d.workspaces?.length) throw new Error("没有任何工作区");
     workspace = d.workspaces[0];
-    $("ws").className = "workspace";
-    $("ws").innerHTML = `✅ 目标工作区：<b>${workspace.name}</b>`;
+    setWs("", "✅ 目标工作区：", workspace.name);
   } catch (e) {
-    $("ws").className = "workspace err";
-    $("ws").textContent = `❌ 连接失败：${e.message}（请确认 AnythingLLM 已启动）`;
+    setWs("err", `❌ 连接失败：${e.message}（请确认 AnythingLLM 已启动且 API Key 正确）`);
   }
   renderFiles();
 }
 
 function renderFiles() {
-  $("filelist").innerHTML = files.map((f, i) =>
-    `<div class="file">
-       <span class="ficon">${extIcon(f.name)}</span>
-       <span class="name" title="${f.name}">${f.name}</span>
-       <span class="size">${fmtSize(f.size)}</span>
-       <button class="rm" data-i="${i}" title="移除">✕</button>
-     </div>`
-  ).join("");
+  $("filelist").replaceChildren(...files.map((f, i) => {
+    const row = document.createElement("div");
+    row.className = "file";
+    const icon = document.createElement("span");
+    icon.className = "ficon";
+    icon.textContent = extIcon(f.name);
+    const name = document.createElement("span");
+    name.className = "name";
+    name.title = f.name;
+    name.textContent = f.name;
+    const size = document.createElement("span");
+    size.className = "size";
+    size.textContent = fmtSize(f.size);
+    const rm = document.createElement("button");
+    rm.className = "rm";
+    rm.dataset.i = String(i);
+    rm.title = "移除";
+    rm.textContent = "✕";
+    row.append(icon, name, size, rm);
+    return row;
+  }));
   $("go").disabled = !files.length || !workspace;
   $("clear").disabled = !files.length;
 }
@@ -270,17 +364,28 @@ $("picker").addEventListener("change", e => { files.push(...e.target.files); e.t
 ["dragleave", "drop"].forEach(ev => drop.addEventListener(ev, e => { e.preventDefault(); drop.classList.remove("over"); }));
 drop.addEventListener("drop", e => { files.push(...e.dataTransfer.files); renderFiles(); });
 $("clear").addEventListener("click", () => { files = []; renderFiles(); });
+$("connSave").addEventListener("click", () => {
+  const base = $("baseUrl").value.trim().replace(/\/+$/, "");
+  const key = $("apiKey").value.trim();
+  if (!base || !key) { $("connState").textContent = "请填写地址与 Key"; return; }
+  conn = { base, key };
+  sessionStorage.setItem(STORAGE_KEY, JSON.stringify(conn));
+  $("apiKey").value = "";
+  $("connState").textContent = "已保存（仅本次会话有效）";
+  $("status").replaceChildren();
+  loadWorkspace();
+});
 
 $("go").addEventListener("click", async () => {
   const btn = $("go");
   btn.disabled = true;
   btn.textContent = "上传中…";
-  $("status").innerHTML = "";
+  $("status").replaceChildren();
   $("step2").className = "s on";
   $("step3").className = "s";
   const locations = [];
   for (const f of files) {
-    line("step", `<span class="spinner"></span>`, `正在上传 ${f.name}…`);
+    line("step", "⏳", `正在上传 ${f.name}…`);
     try {
       const form = new FormData();
       form.append("file", f, f.name);
@@ -296,15 +401,17 @@ $("go").addEventListener("click", async () => {
   }
   if (locations.length) {
     $("step3").className = "s on";
-    line("step", `<span class="spinner"></span>`, `正在将 ${locations.length} 个文档嵌入「${workspace.name}」…`);
+    line("step", "⏳", `正在将 ${locations.length} 个文档嵌入「${workspace ? workspace.name : ""}」…`);
     try {
-      await api(`/api/v1/workspace/${workspace.slug}/update-embeddings`, {
+      await api(`/api/v1/workspace/${encodeURIComponent(workspace.slug)}/update-embeddings`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ adds: locations, deletes: [] }),
       });
-      $("status").insertAdjacentHTML("beforeend",
-        `<div class="done">🎉 完成！${locations.length} 个文档已嵌入，现在可以在 AnythingLLM 中对话使用。</div>`);
+      const done = document.createElement("div");
+      done.className = "done";
+      done.textContent = `🎉 完成！${locations.length} 个文档已嵌入，现在可以在 AnythingLLM 中对话使用。`;
+      $("status").append(done);
       files = [];
       renderFiles();
     } catch (e) {
@@ -315,6 +422,7 @@ $("go").addEventListener("click", async () => {
   btn.disabled = !files.length;
 });
 
+applyConnToForm();
 loadWorkspace();
 </script>
 </body>

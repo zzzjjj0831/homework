@@ -1,5 +1,7 @@
-textual
-openai
-trafilatura
-pyyaml
-mcp>=2.0
+﻿textual>=0.80,<9
+openai>=1.55,<4
+httpx>=0.27,<1
+trafilatura>=1.9,<3
+pyyaml>=6,<7
+mcp>=2.2,<3
+pydantic>=2,<3

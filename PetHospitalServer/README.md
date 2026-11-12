@@ -28,31 +28,35 @@
 
 ## 快速开始
 
-### 方式一：直接使用已编译好的发行包（推荐）
+### 方式一：直接使用仓库内已编译好的二进制（推荐）
 
-请从本仓库的 [GitHub Releases](../../releases) 下载与你的系统匹配的发行 ZIP。解压后结构如下：
+**本仓库没有发布 GitHub Release**，`PetHospitalServer/` 目录本身就是可直接运行的结构：
 
 ```text
-pet-hospital-windows-amd64/
-├── pethospital.exe     ← 可执行文件（已内嵌网页）
+PetHospitalServer/
+├── pethospital.exe     ← 可执行文件（网页已内嵌）
 ├── README.md           ← 本说明
+├── README-Windows.md   ← Windows 使用补充
 └── data/
-    └── pet.db          ← 测试数据库（含模拟数据，可直接打开体验）
+    └── pet.db          ← 示例数据库（含模拟数据，可直接打开体验）
 ```
 
 ```bash
-cd pet-hospital-windows-amd64
-pethospital.exe                       # Windows（双击或命令行）
+cd PetHospitalServer
+./pethospital.exe                     # Windows（双击或命令行）
 ```
 
 然后浏览器打开 <http://127.0.0.1:8080/> 即可看到界面。
 
 > Windows 程序会在终端打印访问地址，**不会自动打开浏览器**。其他平台请下载对应发行包，或用「方式二」自行编译。
 
-### 方式二：从源码编译
+### 方式二：从源码编译（源码不在本仓库）
+
+该服务用 Go 标准库实现，但**源码未随本仓库提交**（本仓库只交付预编译二进制与示例数据）。
+如果你拿到上游源码，构建命令如下，仅作参考：
 
 ```bash
-# 编译到 dist 目录（推荐，与发行包结构一致）
+# 编译到 dist 目录
 make dist            # 或： ./build.sh
 
 # 或者直接运行源码
@@ -62,6 +66,9 @@ go run . -seed -count 2000                # 写入 8 条手工 + 2000 条随机�
 go run . -addr :9090 -db /tmp/hospital.db # 自定义端口与数据库路径
 go run . -no-color                        # 关闭彩色输出
 ```
+
+启动参数同样适用于已编译的 `pethospital.exe`：`pethospital.exe -addr 127.0.0.1:18080 -db data/pet.db`。
+Go 版本要求 **1.22+**。
 
 ### 交叉编译到其他平台
 
@@ -287,38 +294,26 @@ curl -s 'http://127.0.0.1:8080/api/v1/export?format=csv' -o pets.csv
 curl -s -X DELETE http://127.0.0.1:8080/api/v1/pets/PET-000001
 ```
 
-## 项目结构
+## 项目结构（本仓库实际内容）
 
 ```text
-.
-├── main.go                  启动横幅、服务网址、优雅退出
-├── go.mod
-├── Makefile                 构建与发行命令（make help）
-├── build.sh                 构建脚本（无需 make）
-└── internal/
-    ├── model/model.go       数据模型与校验
-    ├── store/store.go       单文件嵌入式数据库引擎
-    └── api/
-        ├── api.go           REST 路由与处理器
-        ├── generate.go      大批量模拟数据生成器
-        ├── support.go       ANSI 着色、手工精选数据
-        ├── web.go           网页路由（embed 内嵌）
-        └── web/index.html   网页界面（单文件）
+PetHospitalServer/
+├── pethospital.exe     预编译服务（网页已内嵌）
+├── data/pet.db         示例数据库（单文件嵌入式存储）
+├── README.md           本说明（接口文档）
+├── README-Windows.md   Windows 使用补充
+└── LICENSE
 ```
+
+上游源码的分层结构（`main.go` / `internal/{model,store,api}`）**不在本仓库**，
+因此本 README 只承诺"行为契约"（HTTP 接口、响应信封、数据库文件格式），不承诺源码结构。
 
 ## 构建与发布
 
-```bash
-make help          # 查看全部命令
-make build         # 编译到 dist/pethospital
-make dist          # 构建 + 准备测试数据库 + 拷贝说明文档
-make test-db       # 仅重建测试数据库（dist/data/pet.db，1000 条模拟数据）
-make clean         # 清理构建产物
-```
-
-`make dist` 产出的 `dist/` 可作为 Release ZIP 的内容：可执行文件、`data/pet.db` 和 `README.md` 必须保持同一目录结构。项目根目录下的 `build.sh` 提供等价功能，不依赖 `make`。
-
-发布时请将 ZIP 作为 GitHub Release 附件上传；`dist/` 是本地构建产物，不提交到仓库。
+- 本仓库不包含源码与构建脚本，也没有发布 Release；
+- 需要自行构建时请使用上游源码的 `make build` / `make dist`（见"方式二"）；
+- `data/pet.db` 是运行期示例数据，随仓库提交以便开箱即用；
+  如只想保留代码，可 `git rm --cached data/pet.db` 并自行 `-seed` 重建。
 
 ## 数据库文件格式
 

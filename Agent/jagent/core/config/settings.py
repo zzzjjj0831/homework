@@ -3,6 +3,8 @@ from pathlib import Path
 
 from openai import OpenAI
 
+LOG_LEVELS = ("DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL")
+
 DEFAULT_VALUES = {
     "llm": {
         "base_url": "http://127.0.0.1:1234/v1",
@@ -15,6 +17,7 @@ DEFAULT_VALUES = {
     },
     "agent": {
         "name": "jagent",
+        "max_steps": "8",
     },
     "ui": {
         "title": "jagent",
@@ -53,6 +56,8 @@ DEFAULT_VALUES = {
         "web_timeout": "30",
         "web_connect_timeout": "10",
         "web_max_summary_chars": "600",
+        "workspace_root": "",
+        "allow_outside_workspace": "false",
         "search_api_url": "https://qianfan.baidubce.com/v2/ai_search/web_search",
         "search_top_k": "10",
         "search_timeout": "30",
@@ -70,6 +75,12 @@ DEFAULT_VALUES = {
     "agents": {
         "enabled": "true",
         "file": "AGENTS.md",
+        "candidates": "AGENT.md,AGENTS.md,.agents/AGENT.md",
+        "max_chars": "20000",
+    },
+    "logging": {
+        "file": ".agents/logs/jagent.log",
+        "level": "INFO",
     },
     "search": {
         "baidu_qianfan_api_key": "",
@@ -91,6 +102,8 @@ summary_reasoning_effort = none
 
 [agent]
 name = jagent
+# 单次用户输入内最多执行多少轮"模型→工具→模型"，防止无限循环
+max_steps = 8
 
 [ui]
 title = jagent
@@ -129,6 +142,9 @@ cli_max_output_chars = 4000
 web_timeout = 30
 web_connect_timeout = 10
 web_max_summary_chars = 600
+# 文件工具的边界：留空表示使用项目根目录；allow_outside_workspace 默认 false（只允许工作区内）
+workspace_root =
+allow_outside_workspace = false
 search_api_url = https://qianfan.baidubce.com/v2/ai_search/web_search
 search_top_k = 10
 search_timeout = 30
@@ -141,7 +157,15 @@ max_description_length = 1024
 
 [agents]
 enabled = true
+# 优先读取 file，不存在时按 candidates 依次回退（逗号分隔，兼容 AGENT.md / AGENTS.md）
 file = AGENTS.md
+candidates = AGENT.md,AGENTS.md,.agents/AGENT.md
+# 注入前的长度上限，超出部分截断并加标记
+max_chars = 20000
+
+[logging]
+file = .agents/logs/jagent.log
+level = INFO
 
 [search]
 baidu_qianfan_api_key = YOUR_SEARCH_API_KEY
@@ -302,6 +326,39 @@ class Config:
 
     def get_agents_path(self) -> Path:
         return self.get_path("agents", "file", "AGENTS.md")
+
+    def get_agents_candidates(self) -> list[str]:
+        raw = self.get("agents", "candidates", "AGENT.md,AGENTS.md")
+        candidates = [item.strip() for item in raw.split(",") if item.strip()]
+        configured = self.get("agents", "file", "AGENTS.md")
+        if configured and configured not in candidates:
+            candidates.insert(0, configured)
+        return candidates
+
+    def get_agents_max_chars(self) -> int:
+        return max(200, self.get_int("agents", "max_chars", 20000))
+
+    def get_agent_max_steps(self) -> int:
+        return max(1, min(self.get_int("agent", "max_steps", 8), 50))
+
+    def get_workspace_root(self) -> Path:
+        raw = self.get("tools", "workspace_root")
+        if not raw:
+            return self.project_root
+        path = Path(raw).expanduser()
+        if not path.is_absolute():
+            path = self.project_root / path
+        return path.resolve()
+
+    def get_allow_outside_workspace(self) -> bool:
+        return self.get_bool("tools", "allow_outside_workspace", False)
+
+    def get_log_path(self) -> Path:
+        return self.get_path("logging", "file", ".agents/logs/jagent.log")
+
+    def get_log_level(self) -> str:
+        level = self.get("logging", "level", "INFO").upper()
+        return level if level in LOG_LEVELS else "INFO"
 
     def get_cli_timeout(self) -> int:
         return max(1, self.get_int("tools", "cli_timeout", 30))

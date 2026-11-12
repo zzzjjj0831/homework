@@ -11,6 +11,7 @@ import yaml
 SKILL_NAME_PATTERN = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
 MAX_SKILL_NAME_LENGTH = 64
 MAX_DESCRIPTION_LENGTH = 1024
+MAX_SKILL_CONTENT_CHARS = 30000
 
 
 @dataclass
@@ -78,6 +79,7 @@ class SkillManager:
         if skill is None:
             return self._error(
                 f"skill not found: {name}",
+                code="SKILL_NOT_FOUND",
                 available=[item.name for item in self.skills.values()],
             )
         if filename is None or not filename.strip():
@@ -89,6 +91,7 @@ class SkillManager:
         if not skill_name or not SKILL_NAME_PATTERN.fullmatch(skill_name):
             return self._error(
                 "invalid skill name: use lowercase letters, numbers and hyphens, e.g. my-skill",
+                code="INVALID_ARGUMENT",
                 name=name,
             )
         if len(skill_name) > self.max_name_length:
@@ -104,12 +107,14 @@ class SkillManager:
         if existing is not None:
             return self._error(
                 f"skill already exists: {skill_name}",
+                code="SKILL_EXISTS",
                 name=skill_name,
                 path=str(existing.path),
             )
         if target_dir.exists():
             return self._error(
                 f"skill already exists: {skill_name}",
+                code="SKILL_EXISTS",
                 name=skill_name,
                 path=str(target_dir.resolve()),
             )
@@ -160,6 +165,7 @@ class SkillManager:
         self.discover()
         return json.dumps(
             {
+                "ok": True,
                 "created": True,
                 "name": skill_name,
                 "description": description,
@@ -212,14 +218,36 @@ class SkillManager:
     def _read_skill_file(self, skill: Skill) -> str:
         path = skill.skill_file
         if not path.is_file():
-            return self._error(f"SKILL.md not found for skill: {skill.name}")
+            return self._error(
+                f"SKILL.md not found for skill: {skill.name}", code="NOT_FOUND"
+            )
         content = self._read_text(path)
         if content is None:
             return self._error(f"failed to read file as utf-8 text: {path}")
+        clipped, truncated, original_chars = self._clip(content)
         return json.dumps(
-            {"skill": skill.name, "path": str(path), "content": content},
+            {
+                "ok": True,
+                "skill": skill.name,
+                "path": str(path),
+                "content": clipped,
+                "truncated": truncated,
+                "original_chars": original_chars,
+            },
             ensure_ascii=False,
         )
+
+    @staticmethod
+    def _clip(content: str) -> tuple[str, bool, int]:
+        """技能内容也有长度上限，避免一次 loadSkill 把上下文撑爆。"""
+        total = len(content)
+        if total <= MAX_SKILL_CONTENT_CHARS:
+            return content, False, total
+        clipped = (
+            content[:MAX_SKILL_CONTENT_CHARS].rstrip()
+            + f"\n\n…（技能内容已截断：原文 {total} 字符，上限 {MAX_SKILL_CONTENT_CHARS} 字符）"
+        )
+        return clipped, True, total
 
     def _read_attachment(self, skill: Skill, filename: str) -> str:
         exact_candidates = self._exact_candidates(skill, filename)
@@ -237,6 +265,7 @@ class SkillManager:
         if outside_candidates:
             return self._error(
                 "file path is outside the skill directory",
+                code="OUTSIDE_SKILL_DIR",
                 candidates=[str(path) for path in outside_candidates],
             )
 
@@ -253,6 +282,7 @@ class SkillManager:
 
         return self._error(
             f"file not found in skill directory: {filename}",
+            code="NOT_FOUND",
             skill=skill.name,
         )
 
@@ -290,12 +320,16 @@ class SkillManager:
         content = self._read_text(path)
         if content is None:
             return self._error(f"failed to read file as utf-8 text: {path}")
+        clipped, truncated, original_chars = self._clip(content)
         return json.dumps(
             {
+                "ok": True,
                 "skill": skill.name,
                 "path": str(path),
                 "relative_path": path.relative_to(skill.path).as_posix(),
-                "content": content,
+                "content": clipped,
+                "truncated": truncated,
+                "original_chars": original_chars,
             },
             ensure_ascii=False,
         )
@@ -337,7 +371,8 @@ class SkillManager:
     def _is_basename(self, filename: str) -> bool:
         return "/" not in filename and "\\" not in filename
 
-    def _error(self, message: str, **extra: object) -> str:
-        data = {"error": message}
-        data.update(extra)
+    def _error(self, message: str, code: str = "TOOL_FAILED", **extra: object) -> str:
+        data: Dict[str, object] = {"ok": False, "error": {"code": code, "message": message}}
+        if extra:
+            data["details"] = extra
         return json.dumps(data, ensure_ascii=False)

@@ -961,10 +961,15 @@ class JagAgentApp(App):
         body.append(
             f" 启用状态：{'已启用' if info['enabled'] else '已禁用'}\n"
         )
-        body.append(f" 文件路径：{info['path']}\n")
+        body.append(f" 配置路径：{info['path']}\n")
+        body.append(
+            f" 实际解析：{info['resolved_path'] or '（未找到）'}\n"
+        )
         body.append(f" 文件存在：{'是' if info['exists'] else '否'}\n")
         body.append(
-            f" 当前会话注入：{'是' if info['injected'] else '否'}\n\n"
+            f" 当前会话注入：{'是' if info['injected'] else '否'}\n"
+            f" 是否截断：{'是' if info['truncated'] else '否'}"
+            f"（上限 {info['max_chars']} 字符）\n\n"
         )
         if not info["enabled"]:
             body.append(

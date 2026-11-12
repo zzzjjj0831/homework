@@ -1,4 +1,5 @@
 import json
+import logging
 import threading
 from datetime import datetime
 from typing import Any, Dict, List, Optional
@@ -15,6 +16,8 @@ from core.mcp.manager import MCPManager
 from core.session.manager import AGENTS_MD_MARKER, SessionManager, is_agents_message
 from core.skills.manager import SkillManager
 from core.tools.registry import ToolRegistry
+
+LOGGER = logging.getLogger("jagent.agent")
 
 COMPACTION_PROMPT_TEMPLATE = """你是一名 AI Agent 的上下文管理助手。当前会话即将达到上下文窗口限制，需要将历史对话压缩为一份高质量的工作摘要，以便 Agent 在新的上下文中继续执行任务。
 
@@ -98,6 +101,8 @@ class AgentCore:
         self.session_id = self.session_manager.new_session_id()
         self.session_title = ""
         self.agents_md_injected = False
+        self.agents_source: Optional[str] = None
+        self.agents_truncated = False
         self.history: List[Dict[str, Any]] = [
             {"role": "system", "content": self.system_prompt}
         ]
@@ -143,24 +148,49 @@ class AgentCore:
         except Exception as exc:
             self.mcp_manager.add_error("startup", f"{type(exc).__name__}: {exc}")
 
+    def _resolve_agents_file(self) -> Optional[Any]:
+        """按 file → candidates 的顺序找工作目录里的长期规则文件（兼容 AGENT.md/AGENTS.md）。"""
+        candidates = [self.config.get_agents_path()]
+        for name in self.config.get_agents_candidates():
+            path = (self.config.project_root / name).expanduser()
+            if path not in candidates:
+                candidates.append(path)
+        for path in candidates:
+            if path.is_file():
+                return path
+        return None
+
     def _inject_agents_md(self, position: Optional[int] = None) -> bool:
+        """把工作目录的 AGENT.md 作为系统消息注入一次（缺失静默跳过，超长截断）。"""
         if not self.config.get_agents_enabled():
             return False
-        path = self.config.get_agents_path()
-        if not path.is_file():
+        path = self._resolve_agents_file()
+        if path is None:
             return False
         try:
             content = path.read_text(encoding="utf-8")
-        except (OSError, UnicodeError):
+        except (OSError, UnicodeError) as exc:
+            LOGGER.warning("agents_file_unreadable path=%s error=%s", path, exc)
             return False
         content = content.strip()
         if not content:
             return False
+
+        max_chars = self.config.get_agents_max_chars()
+        original_length = len(content)
+        self.agents_truncated = original_length > max_chars
+        if self.agents_truncated:
+            content = (
+                content[:max_chars].rstrip()
+                + f"\n\n…（项目说明已截断：原文 {original_length} 字符，上限 {max_chars} 字符）"
+            )
+        self.agents_source = str(path)
+
         message = {
             "role": "system",
             "content": (
                 f"{AGENTS_MD_MARKER}\n"
-                f"# 项目说明（AGENTS.md）\n\n"
+                f"# 项目说明（{path.name}）\n\n"
                 f"来源文件：{path}\n\n{content}"
             ),
         }
@@ -168,15 +198,25 @@ class AgentCore:
             position = len(self.history)
         position = max(1, min(position, len(self.history)))
         self.history.insert(position, message)
+        LOGGER.info(
+            "agents_md_injected path=%s chars=%s truncated=%s",
+            path,
+            original_length,
+            self.agents_truncated,
+        )
         return True
 
     def get_agents_status(self) -> Dict[str, Any]:
         path = self.config.get_agents_path()
+        resolved = self._resolve_agents_file()
         return {
             "enabled": self.config.get_agents_enabled(),
             "path": str(path),
-            "exists": path.is_file(),
+            "resolved_path": str(resolved) if resolved else None,
+            "exists": resolved is not None,
             "injected": self.agents_md_injected,
+            "truncated": self.agents_truncated,
+            "max_chars": self.config.get_agents_max_chars(),
         }
 
     def get_tools(self):
@@ -246,6 +286,123 @@ class AgentCore:
         ratio = self._context_tokens / max(1, int(self.context_window))
         self._context_blocked = ratio >= self.warning_ratio
 
+    def _stream_step(self):
+        """执行一次带工具的流式请求。
+
+        逐段产出 ("delta", 文本)；结束时产出 ("final", {...})，
+        其中包含完整正文、累积出的 tool_calls，以及 usage 是否已由接口上报。
+        """
+        stream = self.client.chat.completions.create(
+            model=self.model,
+            messages=self.history,
+            tools=self.get_tools(),
+            tool_choice="auto",
+            stream=True,
+        )
+        content_parts: List[str] = []
+        buffers: Dict[int, Dict[str, str]] = {}
+        usage_applied = False
+        for chunk in stream:
+            if self._apply_usage(chunk):
+                usage_applied = True
+            choices = getattr(chunk, "choices", None) or []
+            if not choices:
+                continue
+            delta = getattr(choices[0], "delta", None)
+            if delta is None:
+                continue
+
+            text = getattr(delta, "content", None)
+            if text:
+                content_parts.append(text)
+                yield "delta", text
+
+            for call in getattr(delta, "tool_calls", None) or []:
+                index = getattr(call, "index", 0) or 0
+                buffer = buffers.setdefault(
+                    index, {"id": "", "name": "", "arguments": ""}
+                )
+                call_id = getattr(call, "id", None)
+                if call_id:
+                    buffer["id"] = call_id
+                function = getattr(call, "function", None)
+                if function is None:
+                    continue
+                name = getattr(function, "name", None)
+                if name and not buffer["name"]:
+                    buffer["name"] = name
+                arguments = getattr(function, "arguments", None)
+                if arguments:
+                    buffer["arguments"] += arguments
+
+        yield "final", {
+            "content": "".join(content_parts),
+            "tool_calls": [
+                buffers[index] for index in sorted(buffers) if buffers[index]["name"]
+            ],
+            "usage_applied": usage_applied,
+        }
+
+    def _record_tool_calls(self, tool_calls, content: str, step: int) -> None:
+        """把 assistant 的 tool_calls 和每个工具的返回写入 history。"""
+        normalized = [
+            {
+                "id": call["id"] or f"call_{step}_{index}",
+                "name": call["name"],
+                "arguments": call["arguments"] or "{}",
+            }
+            for index, call in enumerate(tool_calls)
+        ]
+        self.history.append(
+            {
+                "role": "assistant",
+                "content": content or None,
+                "tool_calls": [
+                    {
+                        "id": call["id"],
+                        "type": "function",
+                        "function": {
+                            "name": call["name"],
+                            "arguments": call["arguments"],
+                        },
+                    }
+                    for call in normalized
+                ],
+            }
+        )
+        for call in normalized:
+            arguments: Dict[str, Any] = {}
+            try:
+                parsed = json.loads(call["arguments"])
+                if isinstance(parsed, dict):
+                    arguments = parsed
+                else:
+                    raise json.JSONDecodeError("not an object", call["arguments"], 0)
+            except json.JSONDecodeError:
+                result = json.dumps(
+                    {
+                        "ok": False,
+                        "error": {
+                            "code": "BAD_ARGUMENTS",
+                            "message": "工具参数不是合法的 JSON 对象，请修正后重试",
+                            "raw": call["arguments"][:200],
+                        },
+                    },
+                    ensure_ascii=False,
+                )
+            else:
+                result = self.tools_registry.call(call["name"], arguments)
+            self.history.append(
+                {"role": "tool", "tool_call_id": call["id"], "content": result}
+            )
+            LOGGER.info(
+                "step=%s tool=%s arg_keys=%s result_chars=%s",
+                step,
+                call["name"],
+                sorted(arguments.keys()),
+                len(result),
+            )
+
     def run_turn(self, user_message: str):
         if self._compacting:
             yield "上下文压缩正在进行，请等待压缩完成后再继续。"
@@ -258,56 +415,41 @@ class AgentCore:
             return
 
         self.history.append({"role": "user", "content": user_message})
-        response = self.client.chat.completions.create(
-            model=self.model,
-            messages=self.history,
-            tools=self.get_tools(),
-            tool_choice="auto",
-        )
-        usage_applied = self._apply_usage(response)
-        message = response.choices[0].message
-        if message.tool_calls:
-            self.history.append(message)
-            for tool_call in message.tool_calls:
-                name = tool_call.function.name
-                try:
-                    args = json.loads(tool_call.function.arguments or "{}")
-                except Exception:
-                    args = {}
-                tool_result = self.tools_registry.call(name, args)
-                self.history.append(
-                    {
-                        "role": "tool",
-                        "tool_call_id": tool_call.id,
-                        "content": tool_result,
-                    }
-                )
+        max_steps = self.config.get_agent_max_steps()
+        LOGGER.info("turn_start max_steps=%s", max_steps)
 
-            stream = self.client.chat.completions.create(
-                model=self.model,
-                messages=self.history,
-                stream=True,
-            )
-            reply = ""
-            stream_usage_applied = False
-            for chunk in stream:
-                if self._apply_usage(chunk):
-                    stream_usage_applied = True
-                if not chunk.choices:
-                    continue
-                delta = chunk.choices[0].delta.content
-                if delta:
-                    reply += delta
-                    yield delta
-            self.history.append({"role": "assistant", "content": reply})
-            if not stream_usage_applied:
+        # 多轮闭环：模型要工具 → 本地执行 → 结果回填 → 再问模型，直到给出最终答复或触顶
+        for step in range(1, max_steps + 1):
+            final: Dict[str, Any] = {}
+            for kind, payload in self._stream_step():
+                if kind == "delta":
+                    yield payload
+                else:
+                    final = payload
+
+            tool_calls = final.get("tool_calls") or []
+            content = final.get("content") or ""
+            if not tool_calls:
+                self.history.append({"role": "assistant", "content": content})
+                if not final.get("usage_applied"):
+                    self._refresh_context_usage()
+                LOGGER.info(
+                    "turn_end outcome=answer steps=%s chars=%s", step, len(content)
+                )
+                self._autosave_after_turn()
+                return
+
+            self._record_tool_calls(tool_calls, content, step)
+            if not final.get("usage_applied"):
                 self._refresh_context_usage()
-        else:
-            reply = message.content or ""
-            self.history.append({"role": "assistant", "content": reply})
-            if not usage_applied:
-                self._refresh_context_usage()
-            yield reply
+
+        notice = (
+            f"已达到单轮工具调用上限（{max_steps} 步），本轮停止以免死循环。"
+            "可以缩小任务范围后继续，或用 /context 查看上下文占用。"
+        )
+        self.history.append({"role": "assistant", "content": notice})
+        LOGGER.warning("turn_end outcome=max_steps_reached limit=%s", max_steps)
+        yield notice
         self._autosave_after_turn()
 
     def _autosave_after_turn(self) -> None:
